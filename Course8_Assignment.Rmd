@@ -1,0 +1,173 @@
+---
+title: 'Machine Learning Assignment - course # 8'
+author: "Tahrul Amin"
+date: "November 14, 2017"
+output: html_document
+---
+
+#1. Overview
+
+The goal is to predict the manner in which the participants did exercise and classify to one of the five given categories.As i have to predict which class the participant will fall, i will use the classification related models that include classification tree, random forest, generalized boosting model, nayev bayes and linear discriminatory analysis model. I will use parellel processing for random forest and classification tree model buildup to speed up execution. After all the model is built, i found random forest model gave best accuracy which is >99%. So, i have not used model combination as random forest (RF) already predicted high accuracy.I measured the out of sample error which is very low. The RF model then applied to given 20 test data/quiz and prediction result came out fully correct
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+importing required library/packages
+```{r message=FALSE, warning=FALSE}
+library(caret)
+library(randomForest)
+library(parallel)
+library(doParallel)
+library(knitr)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+
+```
+ 
+## 2. Set Working directory and load data
+```{r message=FALSE, warning=FALSE}
+setwd("C:/coursera_project/cr8_prjct")
+
+train_data <- read.csv("pml-training.csv")
+test_data_original <- read.csv("pml-testing.csv")
+
+
+```
+ 
+## 3. Clean/pre-process the data - NZV,impute/missing data
+```{r message=FALSE, warning=FALSE}
+# create partition within the training dataset 
+inTrain  <- createDataPartition(train_data$classe,p=0.7,list=FALSE)
+TrainSet <- train_data[inTrain, ]
+TestSet  <- train_data[-inTrain, ]
+dim(TrainSet)  #13737   160
+dim(TestSet)  ##5885    160
+
+# removing variables with Nearly Zero Variance
+NZV <- nearZeroVar(TrainSet)
+TrainSet <- TrainSet[, -NZV]
+TestSet  <- TestSet[, -NZV]
+test_data_original <- test_data_original[,-NZV]
+dim(TrainSet)           
+dim(TestSet)            
+dim(test_data_original) 
+# removing variables with NA
+TrainSet <- TrainSet[, colSums(is.na(TrainSet) )==0]
+TestSet <- TestSet[, colSums(is.na(TestSet) )==0]
+test_data_original <- test_data_original[, colSums(is.na(test_data_original) ) == 0]
+dim(TrainSet)            #13737    59
+dim(TestSet)             #5885     59
+dim(test_data_original)  #20       59
+
+# removing non-relevant variables to build model (1st 5 columns)
+TrainSet <- TrainSet[, -(1:5)]
+TestSet  <- TestSet[, -(1:5)]
+test_data_original  <- test_data_original[, -(1:5)]
+dim(TrainSet)             #13737    54
+dim(TestSet)              #5885     54
+dim(test_data_original)   #20       54
+#Sys.time() #before building model
+```
+ 
+## 4. Model selection and model building
+```{r message=FALSE, warning=FALSE}
+# As we will predict which category the outcome of test data will fall, we will use classification related model
+# Assuming model is non-linear. Data transformation is also less important for non-linear model
+
+rm()
+set.seed(5678)
+########################
+#LDA: Applying linear discrimant analysis(LDA) assuming variables havee a multivariate distribution within each class
+modlda = train(classe ~ ., data = TrainSet, method="lda")
+modlda$results # Accuracy is not good. Not a good model for our dataset
+########################
+#Naive Bayes: Applying Naive Bayes model assuming data follow a probabilistic model
+#Naive Bayes assumes independence between features for model building
+rm()
+
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+modnb = train(classe ~ ., data = TrainSet, method="nb")
+modnb$results # Accuracy is not good. Not a good model for our dataset.predictor variables may not be independant
+stopCluster(cluster)
+registerDoSEQ()
+
+plda = predict(modlda,TestSet)
+pnb = predict(modnb,TestSet)
+table(plda,pnb) # The model LDA, NB also does not have similar prediction
+########################
+#GBM: Applying Generalized Boosted Model(GBM)-because we are predicting with trees and want to combine weak predictors to #make stronger
+set.seed(12345)
+rm()
+control_gbm <- trainControl(method="cv", number = 5)  #to avoid overfitting, using cross validation
+modFitGBM  <- train(classe ~ ., data=TrainSet, method = "gbm",trControl = control_gbm, verbose = FALSE)
+modFitGBM$finalModel
+
+predict_GBM <- predict(modFitGBM,newdata=TestSet)
+confusion_GBM <- confusionMatrix(predict_GBM, TestSet$classe)
+confusion_GBM #Accuracy is very good
+#########################
+# Cross validation using k-fold and build model using classification tree and random forest
+#set parallel processing as model need speed
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+#Using CLASSIFICATION TREE - trying to identify class based on homogeneity within each group
+rm()
+set.seed(6789)
+control <- trainControl(method="cv", number=5) #cross validation is important to restrict model overfitting
+fit_rpart <- train(classe ~ ., data = TrainSet, method = "rpart", trControl = control)
+print(fit_rpart)
+stopCluster(cluster)
+registerDoSEQ()
+fancyRpartPlot(fit_rpart$finalModel)
+# predict outcomes using Testset(30% from TrainSet)
+predict_rpart <- predict(fit_rpart, TestSet)
+# Show prediction result
+confusion_rpart <- confusionMatrix(TestSet$classe, predict_rpart)
+accuracy_rpart <- confusion_rpart$overall[1]
+accuracy_rpart
+#The classification model does not predict well
+####################################
+#set parallel processing
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+# using RANDOM FOREST - this model normally gives higher accuracy although take more memory to run
+# we will also be able to find correlated predictors using 'random forest' method
+rm()
+fit_rf <- train(classe ~ ., data = TrainSet, method = "rf", trControl = control)#using cross validation to avoid overfitting
+print(fit_rf)
+stopCluster(cluster)
+registerDoSEQ()
+# predict outcomes using Testset(30% from TrainSet)
+predict_rf <- predict(fit_rf, TestSet)
+# Show prediction result
+confusion_rf <- confusionMatrix(TestSet$classe, predict_rf)
+accuracy_rf <- confusion_rf$overall[1]
+accuracy_rf
+# Among all the above models, random forest performed the best and has been chosen for this assignment
+# for categorical outcome, model accuracy is the objective. 
+
+#4: Let's see out-of-sample error rate
+out_of_sample_error = 1-accuracy_rf
+out_of_sample_error
+#####################################
+
+```
+ 
+# 5. Conclusion and Prediction on original test data set
+The Random Forest model predicts very good. So, combining predictors not needed which may overfit.Applying random forest model to original test set CSV file
+
+```{r message=FALSE, warning=FALSE}
+rm()
+predict(fit_rf, test_data_original)
+#Sys.time() #End assignment
+```
+ 
+ 
+ 
+
+ 
+ 
